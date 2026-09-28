@@ -24,8 +24,13 @@ colors = ['#003A7D', '#FF9D3A', '#008DFF', '#FF73B6', '#C701FF', '#4ECB8D', '#F9
 particles = {
     "dedx_range_pro": ("Proton", colors[0]),
     "dedx_range_mu":  ("Muon",   colors[1]),
-    "dedx_range_pi":  ("Pion",   colors[2]),
-    "dedx_range_ka":  ("Kaon",   colors[3]),
+    #"dedx_range_pi":  ("Pion",   colors[2]),
+    #"dedx_range_ka":  ("Kaon",   colors[3]),
+}
+
+particles_dual_color = {
+    "dedx_range_pro": ("Proton", colors[0], colors[2]),
+    "dedx_range_mu":  ("Muon",   colors[1], colors[6]),
 }
 
 
@@ -126,39 +131,6 @@ def expectation_dEdx_plot(fig, ax, expectation_file, plotname, length=None):
     return fig, ax
 
 
-
-def build_expectation_interpolator(expectation_file, key):
- 
-    with uproot.open(expectation_file) as f:
-        keydict = {k.split(";")[0]: k for k in f.keys()}
-        if key not in keydict:
-            sys.exit(f"Could not find '{key}' in {expectation_file}\n"
-                      f"Available keys: {sorted(keydict.keys())}")
-        rr, dedx = load_profile(f, keydict[key])
- 
-    order = np.argsort(rr)
-    return interp1d(rr[order], dedx[order], bounds_error=False, fill_value=np.nan)
- 
- 
-def get_track_side(range_arr, dedx_arr, p):
-    range_arr = np.asarray(range_arr)
-    dedx_arr = np.asarray(dedx_arr)
- 
-    if len(range_arr) == 0:
-        return range_arr, dedx_arr, range_arr, dedx_arr
- 
-    rmin, rmax = range_arr.min(), range_arr.max()
-    span = rmax - rmin
- 
-    start_cut = rmax - (p / 100.0) * span
-    end_cut = rmin + (p / 100.0) * span
- 
-    start_mask = range_arr >= start_cut
-    end_mask = range_arr <= end_cut
- 
-    return range_arr[start_mask], dedx_arr[start_mask], range_arr[end_mask], dedx_arr[end_mask]
- 
- 
 def build_expectation_curve(expectation_file, key):
  
     with uproot.open(expectation_file) as f:
@@ -343,7 +315,113 @@ def dEdx_plot(expectation_file, plotname, xmax=None, ymax=None, length=None,
         fig.savefig(plotname, dpi=300)
         print("Saved plot as ", plotname)
 
+
+def compare_dEdx_data_with_interp(data_file, expectation_file, plotname, select_tracks=[], 
+                                  tree_path="ana/AnaTPCTree", xbranch="PFPTrackRange", ybranch="PFPTrackdEdx"):
+
+    fig, ax = plt.subplots()
+
+    all_tracks_x, all_tracks_y = load_track_dedx_vs_range(data_file, tree_path, xbranch, ybranch)
+
+    if len(select_tracks) == 0: select_tracks = np.arange(0, len(select_tracks)-1, 1)
+
+    for i, (tx, ty) in enumerate(zip(all_tracks_x, all_tracks_y)):
+
+        ax.clear()
+
+        # skip non-select tracks
+        if i not in select_tracks: continue
+
+        for name, (label, color_1, color_2) in particles_dual_color.items():
+
+            val, err = build_expectation_curve(expectation_file, name)
+
+            start_x = tx[tx < 27]
+            start_y = val(start_x)
+
+            track_start_y = ty[0:len(start_y)]
+            dist_to_track_start_y = start_y - track_start_y
+
+            ax.scatter(start_x, dist_to_track_start_y, color=color_1, label=label+" vs. Start", marker='.', s=10)
+
+            end_x = tx[tx > max(tx)-27]
+            end_y = val(np.abs(end_x - max(tx)))
+
+            track_end_y = ty[-len(end_y):]
+            dist_to_track_end_y = end_y - track_end_y
+
+            ax.scatter(end_x, dist_to_track_end_y, color=color_2, label=label+" vs. End", marker='.', s=10)
+
+        ax.set_xlabel("Residual range [cm]", fontsize=16)
+        ax.set_ylabel("dE/dx Difference", fontsize=16)
+        ax.tick_params(labelsize=14)
+
+        ax.set_xlim(min(tx), max(tx))
+        ax.set_ylim(-30, 30)
+
+        ax.legend(fontsize=11, loc='upper center')
+
+        # index plotname
+        split_plotname = plotname.split(".")
+        curr_plotname = "".join([split_plotname[0], '_track_', str(i), '.', split_plotname[1]])
+
+        fig.tight_layout()
+        fig.savefig(curr_plotname, dpi=300)
+        print("Saved plot as ", curr_plotname)
+
  
+def summary_compare_dEdx(data_file, expectation_file, plotname, length, bins=np.linspace(-30, 30, 61), select_tracks=[],
+                                  tree_path="ana/AnaTPCTree", xbranch="PFPTrackRange", ybranch="PFPTrackdEdx"):
+
+    fig, ax = plt.subplots()
+
+    all_tracks_x, all_tracks_y = load_track_dedx_vs_range(data_file, tree_path, xbranch, ybranch)
+
+    if len(select_tracks) == 0: select_tracks = np.arange(0, len(select_tracks)-1, 1)
+
+    for name, (label, color_1, color_2) in particles_dual_color.items():
+
+        val, err = build_expectation_curve(expectation_file, name)
+
+        avg_start = [] 
+        avg_end = [] 
+
+        for i, (tx, ty) in enumerate(zip(all_tracks_x, all_tracks_y)):
+
+            # skip non-select tracks
+            if i not in select_tracks: continue
+
+            start_x = tx[tx < length]
+            start_y = val(start_x)
+
+            track_start_y = ty[0:len(start_y)]
+            dist_to_track_start_y = start_y - track_start_y
+
+            avg_start.append(np.nanmean(dist_to_track_start_y)) 
+
+            end_x = tx[tx > max(tx)-length]
+            end_y = val(np.abs(end_x - max(tx)))
+
+            track_end_y = ty[-len(end_y):]
+            dist_to_track_end_y = end_y - track_end_y
+
+            avg_end.append(np.nanmean(dist_to_track_end_y)) 
+
+        ax.hist(avg_start, bins=bins, color=color_1, label=label+" vs. Start", histtype='step')
+        ax.hist(avg_end, bins=bins, color=color_2, label=label+" vs. End", histtype='step')
+
+    ax.set_xlabel("Average dE/dx Difference", fontsize=16)
+    ax.set_ylabel("Number of Tracks", fontsize=16)
+    ax.tick_params(labelsize=14)
+
+    ax.set_xlim(np.min(bins), np.max(bins))
+
+    ax.legend(fontsize=11, loc='upper right')
+
+    fig.tight_layout()
+    fig.savefig(plotname, dpi=300)
+    print("Saved plot as ", plotname)
+
 # ============================================================
 # PLOTS
 # ============================================================
@@ -353,8 +431,16 @@ def dEdx_plot(expectation_file, plotname, xmax=None, ymax=None, length=None,
 #dEdx_plot(expectation_file, directory+'dEdx_vs_residual_range_expectation_mirrored_80.png', length=80)
 #dEdx_plot(expectation_file, directory+'dEdx_vs_residual_range_expectation_with_data.png', data_file=data_file)
 
+'''
 p_options = [5, 10, 20, 30]
 for p in p_options:
     plotname = directory+'selected_muon__'+str(p)+'pct_track.png'
     plot_selection_histogram(data_file, expectation_file, p, plotname)
+'''
+
+#compare_dEdx_data_with_interp(data_file, expectation_file, directory+'diff_dEdx_vs_residual_range_expectation_with_interp.png', select_tracks=[0, 4, 6, 8, 9, 11, 12, 13, 14, 15, 17, 20, 21, 25])
+#compare_dEdx_data_with_interp(data_file, expectation_file, directory+'diff_dEdx_vs_residual_range_expectation_with_interp.png', select_tracks=[0, 4, 6, 8, 9, 11, 12, 13, 14, 15, 17, 20, 21, 25])
+
+summary_compare_dEdx(data_file, expectation_file, directory+'summary_compare_dEdx_10cm.png', 10, bins=np.linspace(-10, 10, 21), select_tracks=[0, 4, 6, 8, 9, 11, 12, 13, 14, 15, 17, 20, 21, 25])
+summary_compare_dEdx(data_file, expectation_file, directory+'summary_compare_dEdx_20cm.png', 20, bins=np.linspace(-10, 10, 21), select_tracks=[0, 4, 6, 8, 9, 11, 12, 13, 14, 15, 17, 20, 21, 25])
 
